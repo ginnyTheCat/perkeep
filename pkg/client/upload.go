@@ -462,13 +462,40 @@ func (c *Client) UploadFile(ctx context.Context, filename string, contents io.Re
 	if opts != nil && opts.WholeRef.Valid() {
 		wholeRef = append(wholeRef, opts.WholeRef)
 	} else {
-		var buf bytes.Buffer
+		seeker, ok := contents.(io.ReadSeeker)
+		var n int64
 		var err error
-		wholeRef, err = c.wholeRef(io.TeeReader(contents, &buf))
-		if err != nil {
-			return blob.Ref{}, err
+		if ok {
+			n, err = seeker.Seek(0, io.SeekCurrent)
+			if err != nil {
+				ok = false
+			}
 		}
-		contents = io.MultiReader(&buf, contents)
+		if ok {
+			wholeRef, err = c.wholeRef(seeker)
+			if err != nil {
+				return blob.Ref{}, err
+			}
+			_, err = seeker.Seek(n, io.SeekStart)
+			if err != nil {
+				return blob.Ref{}, err
+			}
+		} else {
+			f, err := os.CreateTemp("", "perkeep-upload")
+			if err != nil {
+				return blob.Ref{}, err
+			}
+			defer os.Remove(f.Name())
+			wholeRef, err = c.wholeRef(io.TeeReader(contents, f))
+			if err != nil {
+				return blob.Ref{}, err
+			}
+			_, err = f.Seek(0, io.SeekStart)
+			if err != nil {
+				return blob.Ref{}, err
+			}
+			contents = f
+		}
 	}
 
 	fileRef, err := c.fileMapFromDuplicate(ctx, fileMap, wholeRef)
